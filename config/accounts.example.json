@@ -1,0 +1,41 @@
+{
+  "api_port": 8766,
+  "db_path": "storage/state.db",
+  "telegram": {
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "allowed_user_id": 123456789,
+    "topic_otp": null,
+    "topic_career": null,
+    "topic_academic": null,
+    "topic_digest": null
+  },
+  "accounts": [
+    {
+      "id": "gmail_main",
+      "email": "user@gmail.com",
+      "password": "your_app_password",
+      "host": "imap.gmail.com",
+      "port": 993,
+      "ssl": true,
+      "enabled": false
+    },
+    {
+      "id": "yandex_personal",
+      "email": "user@yandex.ru",
+      "password": "your_yandex_app_password",
+      "host": "imap.yandex.ru",
+      "port": 993,
+      "ssl": true,
+      "enabled": false
+    },
+    {
+      "id": "university_edu",
+      "email": "student@sfedu.ru",
+      "password": "your_university_password",
+      "host": "mail.sfedu.ru",
+      "port": 993,
+      "ssl": true,
+      "enabled": false
+    }
+  ]
+}

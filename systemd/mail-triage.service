@@ -1,0 +1,16 @@
+[Unit]
+Description=Mail Triage and Verification Aggregation Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/mail-triage-daemon
+ExecStart=/home/pi/mail-triage-daemon/venv/bin/python /home/pi/mail-triage-daemon/main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

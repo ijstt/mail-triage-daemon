@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mail-triage-daemon"
+version = "0.1.0"
+description = "Autonomous Multi-Account Mail Triage Daemon with Sub-Millisecond OTP Interception, Telegram Gateway, and Antigravity MCP Integration"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "ijstt" }
+]
+keywords = ["email", "triage", "otp", "2fa", "imap-idle", "telegram", "mcp", "antigravity"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "aiohttp>=3.9.0",
+    "aioimaplib>=1.1.0",
+    "beautifulsoup4>=4.12.0",
+    "httpx>=0.27.0",
+    "fastmcp>=0.1.0",
+]
+
+[project.scripts]
+mail-triage = "main:main"
+mail-triage-mcp = "mcp_server:mcp.run"

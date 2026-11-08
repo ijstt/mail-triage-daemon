@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+*.sqlite3
+*.db
+config/accounts.json
+.env
