@@ -41,6 +41,13 @@ def init_db(db_path: Optional[str] = None):
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_otp_received_at ON otp_cache (received_at)
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS account_sync_state (
+                account_id TEXT PRIMARY KEY,
+                last_seen_uid INTEGER,
+                last_sync_at INTEGER
+            )
+        """)
     conn.close()
 
 def is_processed(account_id: str, message_id: str, db_path: Optional[str] = None) -> bool:
@@ -171,3 +178,33 @@ def get_recent_messages(
             "subject": r[4]
         })
     return results
+
+def get_last_seen_uid(account_id: str, db_path: Optional[str] = None) -> int:
+    """Retrieve the highest processed UID for an account."""
+    target_path = db_path or DB_PATH
+    conn = sqlite3.connect(target_path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT last_seen_uid FROM account_sync_state WHERE account_id = ?",
+        (account_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return int(row[0]) if row and row[0] is not None else 0
+
+def update_last_seen_uid(account_id: str, uid: int, db_path: Optional[str] = None):
+    """Update the highest processed UID for an account (monotonically non-decreasing)."""
+    target_path = db_path or DB_PATH
+    conn = sqlite3.connect(target_path)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO account_sync_state (account_id, last_seen_uid, last_sync_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                last_seen_uid = MAX(account_sync_state.last_seen_uid, excluded.last_seen_uid),
+                last_sync_at = excluded.last_sync_at
+            """,
+            (account_id, int(uid), int(time.time()))
+        )
+    conn.close()

@@ -1,20 +1,25 @@
 """
-Asynchronous IMAP worker supporting IDLE push notifications and robust reconnects.
+Asynchronous IMAP worker supporting IDLE push notifications, UID-based sync, and robust reconnects.
 """
 
+import time
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import aioimaplib
 
 from core.parser import parse_email_bytes
 from core.otp import detect_otp
 from core.filter import is_marketing_or_bulk
 from core.triage import classify_important_email
-from storage.db import is_processed, mark_processed, record_otp
+from storage.db import is_processed, mark_processed, record_otp, get_last_seen_uid, update_last_seen_uid
 from notify.telegram import TelegramNotifier
 
 logger = logging.getLogger(__name__)
+
+MAX_SESSION_SECONDS = 1800   # Reconnect cleanly every 30 minutes to prevent stale NAT/proxy connections
+WATCHDOG_PING_SECONDS = 300  # Send NOOP keepalive every 5 minutes if idle
+IDLE_TICK_SECONDS = 25       # Tick idle loop every 25 seconds
 
 class ImapAccountWorker:
     def __init__(self, account_config: Dict[str, Any], notifier: TelegramNotifier, db_path: Optional[str] = None):
@@ -42,14 +47,14 @@ class ImapAccountWorker:
                 else:
                     client = aioimaplib.IMAP4(host=self.host, port=self.port, timeout=30)
 
-                await client.wait_hello_from_server()
-                login_res = await client.login(self.email, self.password)
+                await asyncio.wait_for(client.wait_hello_from_server(), timeout=15)
+                login_res = await asyncio.wait_for(client.login(self.email, self.password), timeout=20)
                 if login_res.result != "OK":
                     logger.error("Authentication failed for %s: %s", self.email, login_res)
                     await asyncio.sleep(60)
                     continue
 
-                select_res = await client.select("INBOX")
+                select_res = await asyncio.wait_for(client.select("INBOX"), timeout=15)
                 if select_res.result != "OK":
                     logger.error("Failed to select INBOX for %s: %s", self.email, select_res)
                     await asyncio.sleep(30)
@@ -58,15 +63,36 @@ class ImapAccountWorker:
                 logger.info("Connected & authenticated to %s", self.email)
                 retry_delay = 5  # Reset retry delay on successful connection
 
-                # Initial check for unread messages upon connecting
-                await self._check_unseen(client)
+                # Initial check for messages upon connecting
+                await self._check_messages(client, initial=True)
 
-                # Enter IDLE loop with fallback polling
+                session_start = time.time()
+                last_ping = time.time()
+
+                # Enter IDLE loop with fallback polling & keepalive watchdog
                 while self._running:
-                    try:
-                        idle_task = await client.idle_start(timeout=120)
+                    # 1. Lifetime check
+                    if time.time() - session_start > MAX_SESSION_SECONDS:
+                        logger.info("Session lifetime limit reached (30m) for %s. Cycling connection cleanly...", self.email)
+                        break
+
+                    # 2. Watchdog keepalive ping
+                    if time.time() - last_ping > WATCHDOG_PING_SECONDS:
                         try:
-                            await client.wait_server_push(timeout=20)
+                            noop_res = await asyncio.wait_for(client.noop(), timeout=10)
+                            if noop_res.result != "OK":
+                                logger.warning("Keepalive NOOP failed for %s: %s. Reconnecting...", self.email, noop_res)
+                                break
+                            last_ping = time.time()
+                        except Exception as noop_err:
+                            logger.warning("Keepalive NOOP timed out or failed for %s: %s. Reconnecting...", self.email, noop_err)
+                            break
+
+                    # 3. IDLE tick with bounded timeout
+                    try:
+                        idle_task = await asyncio.wait_for(client.idle_start(timeout=120), timeout=15)
+                        try:
+                            await client.wait_server_push(timeout=IDLE_TICK_SECONDS)
                         except (asyncio.TimeoutError, TimeoutError):
                             pass
                         finally:
@@ -75,14 +101,14 @@ class ImapAccountWorker:
                                 await asyncio.wait_for(idle_task, timeout=10)
                             except Exception:
                                 pass
-
-                        # Process any new arrivals
-                        await self._check_unseen(client)
                     except asyncio.CancelledError:
                         raise
-                    except Exception as loop_err:
-                        logger.warning("IDLE loop tick error for %s: %s", self.email, loop_err)
-                        await asyncio.sleep(2)
+                    except Exception as idle_err:
+                        logger.warning("IDLE error for %s: %s. Forcing fresh reconnect...", self.email, idle_err)
+                        break
+
+                    # 4. Process new arrivals (UID-based + UNSEEN)
+                    await self._check_messages(client)
 
             except asyncio.CancelledError:
                 logger.info("Worker for %s cancelled.", self.email)
@@ -95,48 +121,93 @@ class ImapAccountWorker:
             finally:
                 if client:
                     try:
-                        await client.logout()
+                        await asyncio.wait_for(client.logout(), timeout=5)
                     except Exception:
                         pass
 
-    async def _check_unseen(self, client: aioimaplib.IMAP4_SSL):
-        """Fetch and evaluate recent unseen messages."""
+    async def _check_messages(self, client: aioimaplib.IMAP4_SSL, initial: bool = False):
+        """Fetch and evaluate new messages using UID tracking and UNSEEN fallback."""
         try:
+            last_uid = get_last_seen_uid(self.account_id, self.db_path)
+
+            # Discover highest UID in mailbox
+            all_res = await asyncio.wait_for(client.uid_search("ALL", charset=None), timeout=15)
+            if all_res.result != "OK" or not all_res.lines or not all_res.lines[0]:
+                return
+
+            all_uids = [int(u) for u in all_res.lines[0].split() if u.isdigit()]
+            if not all_uids:
+                return
+
+            highest_uid = max(all_uids)
+
+            # Cold start: if no prior UID recorded, start from max(0, highest_uid - 15) to cover immediate arrivals
+            if last_uid == 0:
+                last_uid = max(0, highest_uid - 15)
+                update_last_seen_uid(self.account_id, last_uid, self.db_path)
+                logger.info("Initialized UID tracker for %s at UID %d (highest: %d)", self.account_id, last_uid, highest_uid)
+
+            # 1. Query messages with UID > last_uid
+            uids_to_check: List[int] = []
+            if highest_uid > last_uid:
+                range_res = await asyncio.wait_for(client.uid_search("UID", f"{last_uid + 1}:*", charset=None), timeout=15)
+                if range_res.result == "OK" and range_res.lines and range_res.lines[0]:
+                    range_uids = [int(u) for u in range_res.lines[0].split() if u.isdigit()]
+                    for u in range_uids:
+                        if u > last_uid and u not in uids_to_check:
+                            uids_to_check.append(u)
+
+            # 2. Fallback: also query UNSEEN from the last 2 days (captures moved or backfilled unread messages)
             from datetime import datetime, timezone, timedelta
-            # Only inspect unread emails from the last 2 days to ignore ancient backlogs
             since_date = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%d-%b-%Y")
-            res, data = await client.search(f'(UNSEEN SINCE "{since_date}")')
-            if res != "OK" or not data or not data[0]:
+            unseen_res = await asyncio.wait_for(client.uid_search(f'(UNSEEN SINCE "{since_date}")', charset=None), timeout=15)
+            if unseen_res.result == "OK" and unseen_res.lines and unseen_res.lines[0]:
+                unseen_uids = [int(u) for u in unseen_res.lines[0].split() if u.isdigit()]
+                for u in unseen_uids:
+                    if u not in uids_to_check:
+                        uids_to_check.append(u)
+
+            if not uids_to_check:
                 return
 
-            msg_ids = data[0].split()
-            if not msg_ids:
-                return
+            uids_to_check.sort()
+            logger.info("Found %d candidate message(s) to process in %s (UIDs: %s)", len(uids_to_check), self.email, uids_to_check[:10])
 
-            total_unseen = len(msg_ids)
-            logger.info("Found %d recent unread message(s) in %s (since %s)", total_unseen, self.email, since_date)
+            for uid in uids_to_check:
+                try:
+                    fetch_res = await asyncio.wait_for(client.uid("FETCH", str(uid), "(RFC822)"), timeout=20)
+                    if fetch_res.result != "OK" or not fetch_res.lines:
+                        continue
 
-            for msg_id in msg_ids:
-                fetch_res, fetch_data = await client.fetch(msg_id.decode("ascii"), "(RFC822)")
-                if fetch_res != "OK" or not fetch_data:
-                    continue
+                    raw_email = None
+                    for part in fetch_res.lines:
+                        if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
+                            raw_email = bytes(part[1])
+                            break
+                        elif isinstance(part, (bytes, bytearray)) and len(part) > 50:
+                            raw_email = bytes(part)
+                            break
 
-                raw_email = None
-                for part in fetch_data:
-                    if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
-                        raw_email = bytes(part[1])
-                        break
-                    elif isinstance(part, (bytes, bytearray)) and len(part) > 50:
-                        raw_email = bytes(part)
-                        break
+                    if raw_email:
+                        await self._process_message(raw_email)
 
-                if not raw_email:
-                    continue
+                    # Advance UID pointer
+                    if uid > last_uid:
+                        last_uid = uid
+                        update_last_seen_uid(self.account_id, last_uid, self.db_path)
 
-                await self._process_message(raw_email)
+                except Exception as msg_err:
+                    logger.error("Failed to fetch/process message UID %d in %s: %s", uid, self.email, msg_err)
 
+            # Final update of tracked UID
+            if highest_uid > last_uid:
+                update_last_seen_uid(self.account_id, highest_uid, self.db_path)
+
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            logger.error("Error during _check_unseen for %s: %s", self.email, exc)
+            logger.error("Error during message check for %s: %s", self.email, exc)
+            raise  # Re-raise so worker's inner loop can break and cleanly reconnect
 
     async def _process_message(self, raw_bytes: bytes):
         """Process a single email through the triage pipeline."""
@@ -144,7 +215,7 @@ class ImapAccountWorker:
             parsed = parse_email_bytes(raw_bytes)
             message_id = parsed["message_id"] or f"{self.email}_{parsed['subject']}_{parsed['date']}"
 
-            # Idempotency check
+            # Idempotency check: never process the same message_id twice
             if is_processed(self.account_id, message_id, self.db_path):
                 return
 
@@ -161,16 +232,28 @@ class ImapAccountWorker:
                 mark_processed(self.account_id, message_id, "OTP", parsed["subject"], self.db_path)
                 return
 
-            # Tier 1: Discard-Path for bulk / marketing
+            # Tier 1: Critical Credentials & Security check (BEFORE marketing filter)
+            triage_match = classify_important_email(parsed)
+            if triage_match and triage_match.get("category") in ("CREDENTIALS", "SECURITY"):
+                logger.info("High-priority %s detected in %s: %s", triage_match["category"], self.email, triage_match["tag"])
+                await self.notifier.notify_important(
+                    triage_data=triage_match,
+                    parsed=parsed,
+                    account_email=self.email,
+                    topic_id=self.config.get("topic_important")
+                )
+                mark_processed(self.account_id, message_id, triage_match["category"], parsed["subject"], self.db_path)
+                return
+
+            # Tier 2: Discard-Path for bulk / marketing
             if is_marketing_or_bulk(parsed):
                 logger.debug("Discarded bulk/marketing mail in %s: %s", self.email, parsed["subject"])
                 mark_processed(self.account_id, message_id, "MARKETING", parsed["subject"], self.db_path)
                 return
 
-            # Tier 2: Semantic triage (Career, Academic, Security, Finance)
-            triage_match = classify_important_email(parsed)
+            # Tier 3: Semantic triage (Career, Academic, Finance)
             if triage_match:
-                logger.info("Important email detected in %s: %s", self.email, triage_match["tag"])
+                logger.info("Important email detected in %s: %s (%s)", self.email, triage_match["category"], triage_match["tag"])
                 await self.notifier.notify_important(
                     triage_data=triage_match,
                     parsed=parsed,

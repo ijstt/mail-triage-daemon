@@ -108,12 +108,26 @@ class TelegramNotifier:
         email_clean = html.escape(account_email)
         snippet = html.escape(str(parsed.get("body_text", "")[:400]).strip())
 
+        cred_lines = []
+        if triage_data.get("username"):
+            u_clean = html.escape(str(triage_data["username"]))
+            cred_lines.append(f"<b>Логин:</b> <code>{u_clean}</code>")
+        if triage_data.get("password"):
+            p_clean = html.escape(str(triage_data["password"]))
+            cred_lines.append(f"<b>Пароль:</b> <code>{p_clean}</code>")
+        if triage_data.get("url"):
+            url_clean = html.escape(str(triage_data["url"]))
+            cred_lines.append(f"<b>Панель управления:</b> {url_clean}")
+
+        cred_block = ("\n" + "\n".join(cred_lines) + "\n") if cred_lines else ""
+
         message = (
-            f"<b>[{tag}]</b>\n"
+            f"<b>{tag}</b>\n"
             f"<b>{headline}</b>\n\n"
             f"<b>От:</b> {sender}\n"
             f"<b>Ящик:</b> {email_clean}\n"
-            f"<b>Тема:</b> {subject}\n\n"
+            f"<b>Тема:</b> {subject}\n"
+            f"{cred_block}\n"
             f"<i>{snippet}...</i>"
         )
         return await self.send_message(message, topic_id=topic_id, disable_notification=False)

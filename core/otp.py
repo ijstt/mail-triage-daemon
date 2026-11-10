@@ -10,17 +10,20 @@ from email.utils import parseaddr
 OTP_SUBJECT_KEYWORDS = [
     "код", "code", "verification", "verify", "подтвержд",
     "одноразов", "парол", "password reset", "сброс",
-    "авторизац", "security", "безопасн", "2fa", "otp", "pin"
+    "авторизац", "security", "безопасн", "2fa", "otp", "pin",
+    "steam account", "steam guard", "access from new", "доступ с нового",
+    "login code", "код доступа", "код входа", "sudo authentication", "authentication code"
 ]
 
 OTP_BODY_PATTERNS = [
-    # Explicit phrases with flexible descriptor (e.g. "код подтверждения учетной записи: 123456")
-    r"(?:код|code|пароль|password)(?:[^\d\n\r]{1,50})?[:\s-]\s*([0-9]{4,8})\b",
-    r"(?:use\s+code|enter\s+code|code\s+is):?\s*([0-9]{4,8})\b",
-    r"\bcode\s*[:\-]?\s*([0-9]{4,8})\b",
-    r"\bкод\s*[:\-]?\s*([0-9]{4,8})\b",
-    # Specific services (e.g. Steam Guard: 5 alphanumeric characters)
-    r"\b(?:steam\s+guard|steam\s+code):?\s*([A-Z0-9]{5})\b",
+    # Dedicated Steam Guard / alphanumeric login code pattern (e.g. Login Code\nTCB87)
+    r"(?:\b(?:login\s+code|steam\s+guard(?:\s+code)?|steam\s+code|security\s+code|код\s+доступа|код\s+входа):?\s*(?:\r?\n)?\s*([A-Z0-9]{5})\b)",
+    # Explicit phrases with flexible descriptor and optional newline (e.g. "код подтверждения:\n 123456")
+    r"(?:код|code|пароль|password)(?:[^\d\n\r]{1,50})?[:\s-]\s*(?:\r?\n)?\s*([0-9]{4,8})\b",
+    r"(?:use\s+code|enter\s+code|code\s+is|your\s+code\s+is|ваш\s+код):?\s*(?:\r?\n)?\s*([0-9]{4,8})\b",
+    r"(?:authentication\s+code|verification\s+code|security\s+code):?\s*(?:\r?\n)?\s*([0-9]{4,8})\b",
+    r"\bcode\s*[:\-]?\s*(?:\r?\n)?\s*([0-9]{4,8})\b",
+    r"\bкод\s*[:\-]?\s*(?:\r?\n)?\s*([0-9]{4,8})\b",
     # Standalone 6-digit number in verified OTP context
     r"\b([0-9]{6})\b",
     # Standalone 4-8 digit number

@@ -72,3 +72,56 @@ def test_otp_flexible_descriptors():
     match = detect_otp(subject, body, from_header)
     assert match is not None
     assert match["code"] == "849201"
+
+def test_otp_steam_guard():
+    subject = "Your Steam account: Access from new web or mobile device"
+    body = (
+        "Dear user,\n\n"
+        "It looks like you are trying to log in from a new device. Here is the Steam "
+        "Guard code you need to access your account:\n\n"
+        "Login Code\n"
+        "TCB87\n\n"
+        "If this wasn't you, please reset your password."
+    )
+    from_header = '"Steam Support" <noreply@steampowered.com>'
+
+    match = detect_otp(subject, body, from_header)
+    assert match is not None
+    assert match["code"] == "TCB87"
+    assert "Steam" in match["service"]
+
+def test_otp_github_sudo():
+    subject = "[GitHub] Sudo email verification code"
+    body = (
+        "Hey, ijstt!\n\n"
+        "Here is your GitHub sudo authentication code: 54109541\n"
+        "This code is valid for 15 minutes and can only be used once."
+    )
+    from_header = "GitHub <noreply@github.com>"
+
+    match = detect_otp(subject, body, from_header)
+    assert match is not None
+    assert match["code"] == "54109541"
+    assert "GitHub" in match["service"]
+
+def test_credentials_vdsina():
+    parsed = {
+        "subject": "VDSina.com registration",
+        "from": '"VDSina.com" <support@vdsina.com>',
+        "body_text": (
+            "You have successfully registered in the control panel VDSina.com!\n\n"
+            "- Your username: vladimir.fedorko225@gmail.com\n\n"
+            "- Password for the first login: K6P4#1wV^j-3pz161AZ4\n\n"
+            "Control panel: https://cp.vdsina.com/\n\n"
+            "Help and support https://vdsina.com/qa/"
+        )
+    }
+    match = classify_important_email(parsed)
+    assert match is not None
+    assert match["category"] == "CREDENTIALS"
+    assert match["username"] == "vladimir.fedorko225@gmail.com"
+    assert match["password"] == "K6P4#1wV^j-3pz161AZ4"
+    assert match["url"] == "https://cp.vdsina.com/"
+    # Verify ZERO emojis in tag
+    assert not any(ord(c) > 0x1F000 for c in match["tag"])
+
