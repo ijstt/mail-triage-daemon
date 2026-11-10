@@ -90,12 +90,21 @@ def extract_body(msg: email.message.Message) -> Tuple[str, str]:
 
     return plain_text.strip(), html_text.strip()
 
+def normalize_text(text: str) -> str:
+    """Strip zero-width non-printable characters and normalize non-breaking whitespace."""
+    if not text:
+        return ""
+    import re
+    cleaned = re.sub(r"[\u200b-\u200d\ufeff\u00ad]", "", text)
+    cleaned = cleaned.replace("\xa0", " ")
+    return cleaned
+
 def parse_email_bytes(raw_bytes: bytes) -> Dict[str, Any]:
     """Parse raw RFC822 bytes into a structured dictionary."""
     msg = email.message_from_bytes(raw_bytes)
 
     message_id = msg.get("Message-ID", "").strip()
-    subject = decode_mime_header(msg.get("Subject", ""))
+    subject = normalize_text(decode_mime_header(msg.get("Subject", "")))
     from_header = decode_mime_header(msg.get("From", ""))
     to_header = decode_mime_header(msg.get("To", ""))
     date_header = msg.get("Date", "")
@@ -116,6 +125,7 @@ def parse_email_bytes(raw_bytes: bytes) -> Dict[str, Any]:
         "list_unsubscribe": list_unsubscribe,
         "precedence": precedence,
         "auto_submitted": auto_submitted,
-        "body_text": plain_text,
+        "body_text": normalize_text(plain_text),
         "body_html": html_text
     }
+

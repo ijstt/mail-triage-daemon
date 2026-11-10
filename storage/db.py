@@ -49,6 +49,7 @@ def init_db(db_path: Optional[str] = None):
             )
         """)
     conn.close()
+    prune_old_records(db_path=target_path)
 
 def is_processed(account_id: str, message_id: str, db_path: Optional[str] = None) -> bool:
     if not message_id:
@@ -100,14 +101,15 @@ def get_latest_otp(service: Optional[str] = None, max_age_seconds: int = 900, db
     cur = conn.cursor()
 
     if service:
+        pattern = f"%{service.lower()}%"
         cur.execute(
             """
             SELECT account_id, service, code, received_at, subject
             FROM otp_cache
-            WHERE received_at >= ? AND LOWER(service) LIKE ?
+            WHERE received_at >= ? AND (LOWER(service) LIKE ? OR LOWER(subject) LIKE ?)
             ORDER BY received_at DESC LIMIT 1
             """,
-            (min_time, f"%{service.lower()}%")
+            (min_time, pattern, pattern)
         )
     else:
         cur.execute(
@@ -208,3 +210,21 @@ def update_last_seen_uid(account_id: str, uid: int, db_path: Optional[str] = Non
             (account_id, int(uid), int(time.time()))
         )
     conn.close()
+
+def prune_old_records(max_otp_days: int = 14, max_msg_days: int = 60, db_path: Optional[str] = None):
+    """Clean up expired OTP codes and ancient processed message records to prevent database bloat."""
+    target_path = db_path or DB_PATH
+    if not os.path.exists(target_path):
+        return
+    now = int(time.time())
+    otp_threshold = now - (max_otp_days * 86400)
+    msg_threshold = now - (max_msg_days * 86400)
+    try:
+        conn = sqlite3.connect(target_path)
+        with conn:
+            conn.execute("DELETE FROM otp_cache WHERE received_at < ?", (otp_threshold,))
+            conn.execute("DELETE FROM processed_messages WHERE processed_at < ?", (msg_threshold,))
+        conn.close()
+    except Exception:
+        pass
+

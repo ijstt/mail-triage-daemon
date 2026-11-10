@@ -7,6 +7,7 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 from core.parser import parse_email_bytes
+from core.otp import detect_otp
 
 logger = logging.getLogger(__name__)
 
@@ -106,3 +107,104 @@ async def search_emails(
         sender=sender,
         limit=limit
     )
+
+def _check_spam_sync(
+    account_config: Dict[str, Any],
+    limit: int = 5
+) -> List[Dict[str, Any]]:
+    host = account_config.get("host", "imap.gmail.com")
+    port = account_config.get("port", 993)
+    ssl = account_config.get("ssl", True)
+    email_user = account_config["email"]
+    password = account_config["password"]
+
+    client = None
+    results = []
+    spam_candidates = [
+        '"[Gmail]/Spam"',
+        'Spam',
+        'Junk',
+        '"[Gmail]/Спам"',
+        'Спам',
+        'INBOX.Spam',
+        'INBOX.Junk'
+    ]
+
+    try:
+        if ssl:
+            client = imaplib.IMAP4_SSL(host, port, timeout=20)
+        else:
+            client = imaplib.IMAP4(host, port, timeout=20)
+
+        client.login(email_user, password)
+
+        selected_folder = None
+        for folder in spam_candidates:
+            try:
+                st, _ = client.select(folder, readonly=True)
+                if st == "OK":
+                    selected_folder = folder
+                    break
+            except Exception:
+                continue
+
+        if not selected_folder:
+            return []
+
+        status, data = client.search(None, "ALL")
+        if status != "OK" or not data or not data[0]:
+            return []
+
+        msg_ids = data[0].split()
+        recent_ids = msg_ids[-limit:]
+        recent_ids.reverse()
+
+        for msg_id in recent_ids:
+            fetch_st, fetch_data = client.fetch(msg_id, "(RFC822)")
+            if fetch_st != "OK" or not fetch_data:
+                continue
+
+            raw_bytes = None
+            for part in fetch_data:
+                if isinstance(part, tuple) and len(part) >= 2:
+                    raw_bytes = part[1]
+                    break
+
+            if not raw_bytes:
+                continue
+
+            parsed = parse_email_bytes(raw_bytes)
+            otp_match = detect_otp(
+                parsed.get("subject", ""),
+                parsed.get("body_text", ""),
+                parsed.get("from", "")
+            )
+
+            results.append({
+                "account_id": account_config["id"],
+                "account_email": email_user,
+                "folder": selected_folder,
+                "subject": parsed.get("subject", ""),
+                "from": parsed.get("from", ""),
+                "date": parsed.get("date", ""),
+                "code": otp_match.get("code") if otp_match else None,
+                "service": otp_match.get("service") if otp_match else None
+            })
+
+    except Exception as exc:
+        logger.error("Spam folder check failed for %s: %s", email_user, exc)
+    finally:
+        if client:
+            try:
+                client.logout()
+            except Exception:
+                pass
+
+    return results
+
+async def check_spam_folders(
+    account_config: Dict[str, Any],
+    limit: int = 5
+) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_check_spam_sync, account_config=account_config, limit=limit)
+

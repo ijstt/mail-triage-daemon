@@ -71,7 +71,8 @@ The dedicated bot acts as an edge notifications dashboard and interactive contro
 
 | Command | Description |
 |---|---|
-| `/otp` | Display the most recent 2FA / OTP verification code with 1-tap copyable formatting |
+| `/otp [service]` | Display the most recent 2FA / OTP verification code (optionally filtered by service name) |
+| `/spam` | Inspect spam folders across mailboxes for misplaced verification codes |
 | `/status` | Report daemon uptime, total processed messages, OTP extraction count, and mailbox states |
 | `/recent` | List the most recently processed and triaged emails with category tags |
 | `/search <query>` | Perform real-time IMAP search across all active inboxes (supports Cyrillic and UTF-8 queries) |
@@ -110,7 +111,7 @@ Add the server to your `mcp_config.json`:
         "/path/to/mail-triage-daemon/mcp_server.py"
       ],
       "env": {
-        "MAIL_DAEMON_URL": "http://192.168.0.114:8766"
+        "MAIL_DAEMON_URL": "http://127.0.0.1:8766"
       }
     }
   }

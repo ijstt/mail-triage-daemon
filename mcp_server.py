@@ -11,7 +11,7 @@ from fastmcp import FastMCP
 
 mcp = FastMCP("MailTriage")
 
-DAEMON_URL = os.environ.get("MAIL_DAEMON_URL", "http://192.168.0.114:8766")
+DAEMON_URL = os.environ.get("MAIL_DAEMON_URL", "http://127.0.0.1:8766")
 
 @mcp.tool()
 def mail_get_latest_otp(service_name: str = "") -> str:

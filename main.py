@@ -13,7 +13,7 @@ import sqlite3
 from typing import List
 
 from storage.db import init_db, get_latest_otp, get_recent_messages
-from core.searcher import search_emails
+from core.searcher import search_emails, check_spam_folders
 from notify.telegram import TelegramNotifier
 from core.worker import ImapAccountWorker
 from core.api import MailRestApi
@@ -70,6 +70,16 @@ async def search_all_inboxes(accounts_list: List[dict], query: str) -> List[dict
             logger.warning("Search failed for %s: %s", acc.get("email"), exc)
     return results
 
+async def check_all_spam(accounts_list: List[dict]) -> List[dict]:
+    results = []
+    for acc in accounts_list:
+        try:
+            res = await check_spam_folders(acc, limit=3)
+            results.extend(res)
+        except Exception as exc:
+            logger.warning("Spam folder check failed for %s: %s", acc.get("email"), exc)
+    return results
+
 async def main():
     config_path = os.environ.get(
         "MAIL_TRIAGE_CONFIG",
@@ -113,17 +123,19 @@ async def main():
     workers: List[ImapAccountWorker] = []
     tasks: List[asyncio.Task] = []
 
-    # Launch Telegram command listener for /status, /otp, /recent, /search
+    # Launch Telegram command listener for /status, /otp, /spam, /recent, /search
     status_cb = lambda: get_status_report(all_accounts, db_path)
-    otp_cb = lambda: get_latest_otp(db_path=db_path)
+    otp_cb = lambda service=None: get_latest_otp(service=service, db_path=db_path)
     recent_cb = lambda limit: get_recent_messages(limit=limit, db_path=db_path)
     search_cb = lambda query: search_all_inboxes(active_accounts, query)
+    spam_cb = lambda: check_all_spam(active_accounts)
 
     tasks.append(asyncio.create_task(notifier.start_command_listener(
         status_callback=status_cb,
         otp_callback=otp_cb,
         recent_callback=recent_cb,
-        search_callback=search_cb
+        search_callback=search_cb,
+        spam_callback=spam_cb
     )))
 
     for acc in active_accounts:

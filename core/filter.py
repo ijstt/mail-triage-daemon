@@ -12,7 +12,9 @@ MARKETING_DOMAINS = [
 
 NOTIFICATION_DOMAINS = [
     "notifications.google.com", "notification.yandex.ru",
-    "no-reply@medium.com", "digest@", "news@", "marketing@"
+    "no-reply@medium.com", "digest@", "news@", "marketing@",
+    "follow-suggestions@", "recommendations@", "suggestions@",
+    "mail.instagram.com", "facebookmail.com"
 ]
 
 def is_marketing_or_bulk(parsed: Dict[str, Any]) -> bool:
@@ -30,8 +32,8 @@ def is_marketing_or_bulk(parsed: Dict[str, Any]) -> bool:
     from_header = (parsed.get("from") or "").lower()
     subject = (parsed.get("subject") or "").lower()
 
-    # 3. Domain blacklist for marketing
-    if any(domain in from_header for domain in MARKETING_DOMAINS):
+    # 3. Domain blacklist for marketing and social suggestion broadcasts
+    if any(domain in from_header for domain in MARKETING_DOMAINS + NOTIFICATION_DOMAINS):
         return True
 
     # 4. Standard promotional patterns in Russian and English

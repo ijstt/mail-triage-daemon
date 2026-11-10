@@ -22,7 +22,8 @@ class TelegramNotifier:
     async def setup_bot_commands(self):
         """Register the bot's interactive menu in Telegram client."""
         commands = [
-            {"command": "otp", "description": "Показать последний код верификации (2FA)"},
+            {"command": "otp", "description": "Код 2FA: /otp или /otp <сервис>"},
+            {"command": "spam", "description": "Проверить папку Спам на наличие кодов"},
             {"command": "status", "description": "Статус демона и активных ящиков"},
             {"command": "recent", "description": "Последние обработанные письма"},
             {"command": "search", "description": "Поиск по письмам: /search <запрос>"},
@@ -132,12 +133,33 @@ class TelegramNotifier:
         )
         return await self.send_message(message, topic_id=topic_id, disable_notification=False)
 
+    async def notify_auth_failure(
+        self,
+        account_email: str,
+        error_msg: str = "",
+        topic_id: Optional[int] = None
+    ) -> bool:
+        """
+        Send critical warning when IMAP authentication fails.
+        Alerts the user immediately to fix revoked Google App Password or credentials.
+        """
+        acc_clean = html.escape(account_email)
+        err_clean = html.escape(error_msg) if error_msg else "Неверный логин или пароль приложения"
+        message = (
+            f"<b>Критическое предупреждение: Сбой авторизации IMAP</b>\n"
+            f"<b>Ящик:</b> {acc_clean}\n"
+            f"<b>Детали:</b> {err_clean}\n\n"
+            f"<i>Синхронизация приостановлена. Проверьте актуальность App Password в настройках Google/аккаунта.</i>"
+        )
+        return await self.send_message(message, topic_id=topic_id, disable_notification=False)
+
     async def start_command_listener(
         self,
         status_callback: Optional[Callable[[], str]] = None,
-        otp_callback: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+        otp_callback: Optional[Callable[[Optional[str]], Optional[Dict[str, Any]]]] = None,
         recent_callback: Optional[Callable[[int], List[Dict[str, Any]]]] = None,
-        search_callback: Optional[Callable[[str], Any]] = None
+        search_callback: Optional[Callable[[str], Any]] = None,
+        spam_callback: Optional[Callable[[], Any]] = None
     ):
         """
         Background listener for incoming Telegram commands.
@@ -184,7 +206,9 @@ class TelegramNotifier:
 
                             elif text.startswith("/otp"):
                                 if otp_callback:
-                                    otp = otp_callback()
+                                    parts = text.split(maxsplit=1)
+                                    service_query = parts[1].strip() if len(parts) > 1 else None
+                                    otp = otp_callback(service_query)
                                     if otp:
                                         age = otp.get("age_seconds", 0)
                                         m, s = divmod(age, 60)
@@ -198,10 +222,40 @@ class TelegramNotifier:
                                             f"<b>Получен:</b> {age_str} назад"
                                         )
                                     else:
-                                        msg_out = "<i>Свежих кодов подтверждения за последние 15 минут не обнаружено.</i>"
+                                        if service_query:
+                                            msg_out = f"<i>Кодов подтверждения для «{html.escape(service_query)}» за последние 15 минут не обнаружено.</i>"
+                                        else:
+                                            msg_out = "<i>Свежих кодов подтверждения за последние 15 минут не обнаружено.</i>"
                                     await self.send_message(msg_out)
                                 else:
                                     await self.send_message("Модуль OTP недоступен.")
+
+                            elif text.startswith("/spam"):
+                                if spam_callback:
+                                    await self.send_message("Проверяю папку Спам на наличие кодов и свежих сообщений...")
+                                    try:
+                                        spam_results = await spam_callback()
+                                        if not spam_results:
+                                            await self.send_message("Папка Спам пуста либо в ней нет сообщений.")
+                                        else:
+                                            lines = [f"<b>Найдено в Спаме ({len(spam_results)}):</b>\n"]
+                                            for idx, s_item in enumerate(spam_results[:5], 1):
+                                                s_subj = html.escape(str(s_item.get("subject", "")))
+                                                s_from = html.escape(str(s_item.get("from", "")))
+                                                s_acc = html.escape(str(s_item.get("account_email", "")))
+                                                code_str = s_item.get("code")
+                                                code_line = f"   <b>Код:</b> <code>{html.escape(str(code_str))}</code>\n" if code_str else ""
+                                                lines.append(
+                                                    f"{idx}. <b>{s_subj}</b>\n"
+                                                    f"   <b>От:</b> {s_from}\n"
+                                                    f"   <b>Ящик:</b> {s_acc}\n"
+                                                    f"{code_line}"
+                                                )
+                                            await self.send_message("\n".join(lines))
+                                    except Exception as sp_err:
+                                        await self.send_message(f"Ошибка проверки папки Спам: {html.escape(str(sp_err))}")
+                                else:
+                                    await self.send_message("Проверка спама не настроена.")
 
                             elif text.startswith("/recent"):
                                 if recent_callback:
@@ -269,7 +323,8 @@ class TelegramNotifier:
                             elif text.startswith("/help"):
                                 help_text = (
                                     "<b>Справка по командам Juhan Mail:</b>\n\n"
-                                    "• /otp — Показать последний проверочный код (2FA/OTP)\n"
+                                    "• /otp [сервис] — Показать последний проверочный код (2FA/OTP)\n"
+                                    "• /spam — Проверить папки Спам на ошибочно отфильтрованные коды\n"
                                     "• /status — Uptime, счетчики обработанных писем и статус соединений\n"
                                     "• /recent — Показать последние обработанные письма\n"
                                     "• /search &lt;запрос&gt; — Быстрый поиск писем по теме и тексту\n"

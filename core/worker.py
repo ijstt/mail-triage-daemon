@@ -51,6 +51,15 @@ class ImapAccountWorker:
                 login_res = await asyncio.wait_for(client.login(self.email, self.password), timeout=20)
                 if login_res.result != "OK":
                     logger.error("Authentication failed for %s: %s", self.email, login_res)
+                    try:
+                        err_lines = " ".join(str(l) for l in getattr(login_res, "lines", [])) if hasattr(login_res, "lines") else str(login_res)
+                        await self.notifier.notify_auth_failure(
+                            account_email=self.email,
+                            error_msg=err_lines,
+                            topic_id=self.config.get("topic_important")
+                        )
+                    except Exception as notify_err:
+                        logger.error("Failed to deliver auth failure alert: %s", notify_err)
                     await asyncio.sleep(60)
                     continue
 
